@@ -1,0 +1,187 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "717e2bc86ebbc45d102deb885062b56c",
+    "entities": [
+      {
+        "tableName": "scans",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `title` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `image_path` TEXT NOT NULL, `thumbnail_path` TEXT NOT NULL, `image_width` INTEGER NOT NULL, `image_height` INTEGER NOT NULL, `favorite` INTEGER NOT NULL, `notes` TEXT NOT NULL, `tags` TEXT NOT NULL, `collection` TEXT, `shape_types` TEXT NOT NULL, `ocr_text` TEXT NOT NULL, `calibration_json` TEXT NOT NULL, `shapes_json` TEXT NOT NULL, `ocr_json` TEXT, `deleted_at` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "imagePath",
+            "columnName": "image_path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "thumbnailPath",
+            "columnName": "thumbnail_path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "imageWidth",
+            "columnName": "image_width",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "imageHeight",
+            "columnName": "image_height",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "favorite",
+            "columnName": "favorite",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tags",
+            "columnName": "tags",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "collection",
+            "columnName": "collection",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "shapeTypes",
+            "columnName": "shape_types",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ocrText",
+            "columnName": "ocr_text",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "calibrationJson",
+            "columnName": "calibration_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "shapesJson",
+            "columnName": "shapes_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ocrJson",
+            "columnName": "ocr_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "deletedAt",
+            "columnName": "deleted_at",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "scans_fts",
+        "createSql": "CREATE VIRTUAL TABLE IF NOT EXISTS `${TABLE_NAME}` USING FTS4(`title` TEXT NOT NULL, `notes` TEXT NOT NULL, `tags` TEXT NOT NULL, `shape_types` TEXT NOT NULL, `ocr_text` TEXT NOT NULL, content=`scans`)",
+        "fields": [
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tags",
+            "columnName": "tags",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "shapeTypes",
+            "columnName": "shape_types",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ocrText",
+            "columnName": "ocr_text",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": []
+        },
+        "ftsVersion": "FTS4",
+        "ftsOptions": {
+          "tokenizer": "simple",
+          "tokenizerArgs": [],
+          "contentTable": "scans",
+          "languageIdColumnName": "",
+          "matchInfo": "FTS4",
+          "notIndexedColumns": [],
+          "prefixSizes": [],
+          "preferredOrder": "ASC"
+        },
+        "contentSyncTriggers": [
+          "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_scans_fts_BEFORE_UPDATE BEFORE UPDATE ON `scans` BEGIN DELETE FROM `scans_fts` WHERE `docid`=OLD.`rowid`; END",
+          "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_scans_fts_BEFORE_DELETE BEFORE DELETE ON `scans` BEGIN DELETE FROM `scans_fts` WHERE `docid`=OLD.`rowid`; END",
+          "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_scans_fts_AFTER_UPDATE AFTER UPDATE ON `scans` BEGIN INSERT INTO `scans_fts`(`docid`, `title`, `notes`, `tags`, `shape_types`, `ocr_text`) VALUES (NEW.`rowid`, NEW.`title`, NEW.`notes`, NEW.`tags`, NEW.`shape_types`, NEW.`ocr_text`); END",
+          "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_scans_fts_AFTER_INSERT AFTER INSERT ON `scans` BEGIN INSERT INTO `scans_fts`(`docid`, `title`, `notes`, `tags`, `shape_types`, `ocr_text`) VALUES (NEW.`rowid`, NEW.`title`, NEW.`notes`, NEW.`tags`, NEW.`shape_types`, NEW.`ocr_text`); END"
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '717e2bc86ebbc45d102deb885062b56c')"
+    ]
+  }
+}
