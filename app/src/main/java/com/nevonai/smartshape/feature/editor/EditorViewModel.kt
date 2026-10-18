@@ -21,11 +21,16 @@ import com.nevonai.smartshape.model.OcrResult
 import com.nevonai.smartshape.model.Point2
 import com.nevonai.smartshape.model.Polygons
 import com.nevonai.smartshape.model.ShapeMeasurement
+import com.nevonai.smartshape.model.ShapeType
 import com.nevonai.smartshape.model.TextMatch
 import com.nevonai.smartshape.model.TextSearch
+import com.nevonai.smartshape.model.primary
 import com.nevonai.smartshape.ocr.TextRecognizer
 import com.nevonai.smartshape.ui.navigation.Editor
 import com.nevonai.smartshape.util.BitmapIO
+import android.os.Build
+import androidx.exifinterface.media.ExifInterface
+import com.nevonai.smartshape.model.FocusCorrection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -64,6 +69,8 @@ data class EditorState(
     val matches: List<TextMatch> = emptyList(),
     val activeMatch: Int = 0,
     val saving: Boolean = false,
+    /** User is drawing a box around the sticker on the image. */
+    val marking: Boolean = false,
     val dirty: Boolean = false,
 ) {
     val measurements: Map<Int, ShapeMeasurement> = shapes.associate { it.id to MeasurementEngine.measure(it, calibration) }
@@ -79,7 +86,7 @@ sealed interface EditorEvent {
 class EditorViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val scans: ScanRepository,
-    settings: SettingsRepository,
+    private val settings: SettingsRepository,
 ) : ViewModel() {
 
     private val route = savedStateHandle.toRoute<Editor>()
@@ -116,19 +123,28 @@ class EditorViewModel @Inject constructor(
         val image = path?.let { BitmapIO.load(it) } ?: return fail("The image could not be opened.")
         val (shapes, markers) = withContext(Dispatchers.Default) {
             val markers = MarkerDetector.detect(image)
-            // One photo = one measured object: keep only the single largest outline.
+            // One photo = one measured object: the outline nearest the centre, where the user aimed.
             val shapes = MarkerDetector.withoutMarkers(ShapeDetector.detect(image), markers)
-                .maxByOrNull { Polygons.area(it.points) }
+                .primary(image.width, image.height)
                 ?.let { listOf(it.copy(id = 1)) }
                 .orEmpty()
             shapes to markers
         }
         val markerCal = MarkerDetector.calibrationFrom(markers)
+        val s = settings.settings.first()
+        // Prefer the autofocus distance saved with the photo; fall back to the fixed distance setting.
+        val focusMm = withContext(Dispatchers.IO) {
+            runCatching { ExifInterface(path!!).getAttributeDouble(ExifInterface.TAG_SUBJECT_DISTANCE, -1.0) * 1000 }.getOrDefault(-1.0)
+        }.takeIf { it in 50.0..3000.0 }?.let { FocusCorrection.forDevice(Build.MODEL).trueDistanceMm(it) }
+        val distanceCal = s.focalNorm?.let { f ->
+            if (focusMm != null) MeasurementEngine.fromCameraDistance(focusMm, f, maxOf(image.width, image.height), "away (autofocus)")
+            else MeasurementEngine.fromCameraDistance(s.cameraDistanceMm, f, maxOf(image.width, image.height))
+        }
         _state.update {
             it.copy(
                 loading = false, image = image, shapes = shapes, selectedId = shapes.firstOrNull()?.id,
                 markerCorners = markers.maxByOrNull { m -> Polygons.area(m.corners) }?.corners,
-                markerCalibration = markerCal, calibration = markerCal ?: Calibration.None, dirty = true,
+                markerCalibration = markerCal, calibration = markerCal ?: distanceCal ?: Calibration.None, dirty = true,
             )
         }
         if (markerCal != null) _events.send(EditorEvent.Message("Calibration marker found – perspective corrected"))
@@ -161,6 +177,21 @@ class EditorViewModel @Inject constructor(
             calibration = if (wasReference) Calibration.None else s.calibration,
             dirty = true,
         )
+    }
+
+    fun startMarking() = _state.update { it.copy(marking = true, tab = EditorTab.MEASURE) }
+    fun cancelMarking() = _state.update { it.copy(marking = false) }
+
+    /**
+     * Replaces the detected outline with the sticker the user marked (one object per photo). The
+     * calibration is kept: it maps the whole image, not one shape.
+     */
+    fun markSticker(corners: List<Point2>) = _state.update { s ->
+        val e = Polygons.edges(corners)
+        val ratio = minOf(e[0], e[1]) / maxOf(e[0], e[1])
+        val id = (s.shapes.maxOfOrNull { it.id } ?: 0) + 1
+        val shape = DetectedShape(id, if (ratio > 0.95) ShapeType.SQUARE else ShapeType.RECTANGLE, 1f, corners)
+        s.copy(shapes = listOf(shape), selectedId = id, referenceShapeId = null, marking = false, dirty = true)
     }
 
     fun useMarker() = _state.update { s -> s.markerCalibration?.let { s.copy(calibration = it, referenceShapeId = null, dirty = true) } ?: s }
@@ -199,6 +230,21 @@ class EditorViewModel @Inject constructor(
     fun usePpi(ppi: Double) {
         val calibration = MeasurementEngine.fromPpi(ppi) ?: return
         _state.update { it.copy(calibration = calibration, referenceShapeId = null, dirty = true) }
+    }
+
+    /** Reference-free calibration from the lens-to-object distance; also saved as the new default. */
+    fun useCameraDistance(distanceCm: Double) {
+        val image = _state.value.image ?: return
+        viewModelScope.launch {
+            val focal = settings.settings.first().focalNorm
+            if (focal == null) {
+                _events.send(EditorEvent.Message("Open the camera once so the app can read its lens data"))
+                return@launch
+            }
+            val calibration = MeasurementEngine.fromCameraDistance(distanceCm * 10, focal, maxOf(image.width, image.height)) ?: return@launch
+            settings.setCameraDistance(distanceCm * 10)
+            _state.update { it.copy(calibration = calibration, referenceShapeId = null, dirty = true) }
+        }
     }
 
     /** Refits the reference homography after the user moves one of the reference's corners. */

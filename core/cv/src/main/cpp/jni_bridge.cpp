@@ -19,7 +19,7 @@ namespace {
 using smartshape::Marker;
 using smartshape::Shape;
 
-bool bitmapToGray(JNIEnv *env, jobject bitmap, cv::Mat &gray) {
+bool bitmapToGray(JNIEnv *env, jobject bitmap, cv::Mat &gray, cv::Mat *rgb = nullptr) {
     AndroidBitmapInfo info;
     if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS) return false;
     if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
@@ -30,6 +30,7 @@ bool bitmapToGray(JNIEnv *env, jobject bitmap, cv::Mat &gray) {
     if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) return false;
     const cv::Mat rgba(static_cast<int>(info.height), static_cast<int>(info.width), CV_8UC4, pixels, info.stride);
     cv::cvtColor(rgba, gray, cv::COLOR_RGBA2GRAY);
+    if (rgb != nullptr) cv::cvtColor(rgba, *rgb, cv::COLOR_RGBA2RGB);  // copies, so safe after unlock
     AndroidBitmap_unlockPixels(env, bitmap);
     return true;
 }
@@ -106,9 +107,9 @@ JNIEXPORT jfloatArray JNICALL
 Java_com_nevonai_smartshape_cv_NativeCv_detectShapesBitmap(JNIEnv *env, jobject, jobject bitmap, jint maxDim,
                                                           jboolean refine) {
     return guarded(env, [&] {
-        cv::Mat gray;
-        if (!bitmapToGray(env, bitmap, gray)) return toArray(env, {0.0f});
-        return encodeShapes(env, smartshape::detectShapes(gray, params(maxDim, refine)));
+        cv::Mat gray, rgb;
+        if (!bitmapToGray(env, bitmap, gray, &rgb)) return toArray(env, {0.0f});
+        return encodeShapes(env, smartshape::detectShapes(gray, params(maxDim, refine), rgb));
     });
 }
 

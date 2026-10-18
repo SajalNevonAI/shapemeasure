@@ -6,6 +6,8 @@ import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
@@ -144,6 +146,7 @@ fun ScannerScreen(onCaptured: (String) -> Unit, onClose: () -> Unit, vm: Scanner
     }
 }
 
+@androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
 @Composable
 private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, onPickImage: () -> Unit) {
     val context = LocalContext.current
@@ -152,6 +155,11 @@ private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, on
     val scope = rememberCoroutineScope()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val live by vm.live.collectAsStateWithLifecycle()
+    val distanceMm by vm.trueDistanceMm.collectAsStateWithLifecycle()
+    // The shutter unlocks only when the phone is at the fixed measuring distance.
+    val targetMm = settings.cameraDistanceMm
+    val atTarget = distanceMm?.let { kotlin.math.abs(it - targetMm) <= DISTANCE_TOLERANCE_MM } == true
+    LaunchedEffect(atTarget) { if (atTarget) haptics.performHapticFeedback(HapticFeedbackType.SegmentTick) }
 
     var showGrid by remember(settings.showGrid) { mutableStateOf(settings.showGrid) }
     var flashMode by remember { mutableIntStateOf(ImageCapture.FLASH_MODE_OFF) }
@@ -180,7 +188,9 @@ private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, on
         val job = scope.launch {
             val p = ProcessCameraProvider.awaitInstance(context)
             provider = p
-            val preview = Preview.Builder().setResolutionSelector(ratio.build()).build().also { it.surfaceProvider = previewView.surfaceProvider }
+            val preview = Preview.Builder().setResolutionSelector(ratio.build())
+                .also { Camera2Interop.Extender(it).setSessionCaptureCallback(vm.focusCallback) }
+                .build().also { it.surfaceProvider = previewView.surfaceProvider }
             val analysis = ImageAnalysis.Builder()
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
@@ -193,6 +203,7 @@ private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, on
                 .also { it.setAnalyzer(vm.analysisExecutor, vm::analyze) }
             p.unbindAll()
             camera = p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageCapture, analysis)
+                .also(vm::saveIntrinsics)
         }
         onDispose {
             job.cancel()
@@ -222,7 +233,7 @@ private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, on
                     },
             )
             focusPoint?.let { FocusRing(it) { focusPoint = null } }
-            HintChip(live, Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(top = 16.dp))
+            HintChip(live, distanceMm, targetMm, Modifier.align(Alignment.TopCenter).safeDrawingPadding().padding(top = 16.dp))
         }
 
         Row(
@@ -235,14 +246,15 @@ private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, on
             verticalAlignment = Alignment.CenterVertically,
         ) {
             CircleControl(onClick = onPickImage) { Icon(Icons.Rounded.PhotoLibrary, "Import from gallery", tint = Color.White) }
-            ShutterButton(onClick = {
+            ShutterButton(ready = atTarget, onClick = {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 vm.setBusy(true)
                 imageCapture.takePicture(ContextCompat.getMainExecutor(context), object : ImageCapture.OnImageCapturedCallback() {
                     override fun onCaptureSuccess(image: ImageProxy) {
+                        val focus = vm.focusMm.value
                         val bitmap = image.use { BitmapIO.rotate(it.toBitmap(), it.imageInfo.rotationDegrees) }
                         scope.launch {
-                            val path = vm.persistCapture(bitmap)
+                            val path = vm.persistCapture(bitmap, focus)
                             vm.setBusy(false)
                             onCaptured(path)
                         }
@@ -326,34 +338,43 @@ private fun FocusRing(at: Offset, onDone: () -> Unit) {
 }
 
 @Composable
-private fun HintChip(live: LiveFrame, modifier: Modifier) {
+private fun HintChip(live: LiveFrame, distanceMm: Double?, targetMm: Double, modifier: Modifier) {
+    fun cm(mm: Double) = com.nevonai.smartshape.model.Formats.number(mm / 10, 0)
     val q = live.quality
-    val (text, warn) = when {
-        q?.isDark == true -> "More light needed" to true
-        q?.isOverexposed == true -> "Too bright – reduce glare" to true
-        q?.isBlurry == true -> "Hold steady" to true
-        live.shapes.isEmpty() -> "Point at an object on a flat surface" to false
-        live.shapes.size == 1 -> "${live.shapes[0].type.label} detected" to false
-        else -> "${live.shapes.size} shapes detected" to false
+    // warn: amber, ready: green, otherwise neutral.
+    val (text, warn, ready) = when {
+        q?.isDark == true -> Triple("More light needed", true, false)
+        q?.isOverexposed == true -> Triple("Too bright – reduce glare", true, false)
+        distanceMm == null -> Triple("Centre the object · focusing…", false, false)
+        distanceMm < targetMm - DISTANCE_TOLERANCE_MM -> Triple("Move phone back ↑  ${cm(distanceMm)} cm → ${cm(targetMm)} cm", true, false)
+        distanceMm > targetMm + DISTANCE_TOLERANCE_MM -> Triple("Move phone closer ↓  ${cm(distanceMm)} cm → ${cm(targetMm)} cm", true, false)
+        q?.isBlurry == true -> Triple("${cm(targetMm)} cm · hold steady", false, false)
+        else -> Triple("✓ ${cm(distanceMm)} cm – ready, take the photo", false, true)
     }
     AnimatedVisibility(visible = true, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
-        Surface(shape = CircleShape, color = if (warn) Color(0xE6B45309) else Color.Black.copy(alpha = 0.55f)) {
+        Surface(shape = CircleShape, color = when { ready -> Color(0xE6059669); warn -> Color(0xE6B45309); else -> Color.Black.copy(alpha = 0.55f) }) {
             Text(text, color = Color.White, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         }
     }
 }
 
 @Composable
-private fun ShutterButton(onClick: () -> Unit) {
+private fun ShutterButton(ready: Boolean, onClick: () -> Unit) {
+    // Greyed out and not clickable until the phone is at the measuring distance.
+    val ring = if (ready) Color(0xFF10B981) else Color.White.copy(alpha = 0.35f)
+    val fill = if (ready) Color.White else Color.White.copy(alpha = 0.25f)
     Box(
         Modifier
             .size(78.dp)
-            .border(4.dp, Color.White, CircleShape)
+            .border(4.dp, ring, CircleShape)
             .padding(8.dp)
-            .background(Color.White, CircleShape)
-            .clickable(onClickLabel = "Capture photo", onClick = onClick),
+            .background(fill, CircleShape)
+            .clickable(enabled = ready, onClickLabel = "Capture photo", onClick = onClick),
     )
 }
+
+/** How far from the fixed distance the phone may be and still take a photo (±1 cm). */
+private const val DISTANCE_TOLERANCE_MM = 10.0
 
 @Composable
 private fun CircleControl(onClick: () -> Unit, content: @Composable () -> Unit) {

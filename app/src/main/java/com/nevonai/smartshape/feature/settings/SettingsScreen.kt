@@ -5,6 +5,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -58,6 +65,7 @@ class SettingsViewModel @Inject constructor(
     fun setTheme(t: ThemeMode) = viewModelScope.launch { repo.setTheme(t) }
     fun setHaptics(on: Boolean) = viewModelScope.launch { repo.setHaptics(on) }
     fun setGrid(on: Boolean) = viewModelScope.launch { repo.setGrid(on) }
+    fun setDistanceCm(cm: Double) = viewModelScope.launch { repo.setCameraDistance(cm * 10) }
     fun restore(id: Long) = viewModelScope.launch { scans.restore(id) }
 }
 
@@ -79,6 +87,26 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = hiltViewModel()) 
             item { Header("Measurement") }
             item { Text("Default unit", style = MaterialTheme.typography.bodyMedium) }
             item { UnitSelector(s.unit, vm::setUnit) }
+            item {
+                var text by remember(s.cameraDistanceMm) { mutableStateOf(Formats.number(s.cameraDistanceMm / 10, 1)) }
+                ListItem(
+                    headlineContent = { Text("Camera distance (no reference needed)") },
+                    supportingContent = {
+                        Text(
+                            if (s.focalNorm == null) "Open the scanner once so the app can read the lens data."
+                            else "Lens-to-object distance used to convert pixels to real size. Keep the phone flat and parallel to the object at this height.",
+                        )
+                    },
+                    trailingContent = {
+                        OutlinedTextField(
+                            text,
+                            { v -> text = v; v.toDoubleOrNull()?.takeIf { it > 0 }?.let(vm::setDistanceCm) },
+                            Modifier.width(110.dp), singleLine = true, suffix = { Text("cm") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        )
+                    },
+                )
+            }
             item {
                 ListItem(
                     headlineContent = { Text("Calibration marker") },

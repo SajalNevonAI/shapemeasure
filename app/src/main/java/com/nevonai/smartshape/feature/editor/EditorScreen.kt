@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
@@ -128,7 +131,20 @@ fun EditorScreen(onSaved: (Long) -> Unit, onBack: () -> Unit, vm: EditorViewMode
                         showShapes = state.tab == EditorTab.MEASURE,
                         onSelect = vm::select,
                         onMoveVertex = vm::moveVertex,
+                        markMode = state.marking,
+                        onMarked = vm::markSticker,
                     )
+                    if (state.marking) {
+                        Surface(
+                            shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.inverseSurface,
+                            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
+                        ) {
+                            Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Drag a box over the sticker", color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.labelLarge)
+                                TextButton(onClick = vm::cancelMarking) { Text("Cancel", color = MaterialTheme.colorScheme.inversePrimary) }
+                            }
+                        }
+                    }
                 }
                 PrimaryTabRow(selectedTabIndex = state.tab.ordinal) {
                     Tab(state.tab == EditorTab.MEASURE, onClick = { vm.selectTab(EditorTab.MEASURE) }, text = { Text("Measure (${state.shapes.size})") })
@@ -179,8 +195,15 @@ private fun MeasurePanel(state: EditorState, vm: EditorViewModel, onCalibrate: (
             CalibrationStatusCard(state.calibration, onCalibrate = onCalibrate, onClear = vm::clearCalibration)
         }
         item { UnitSelector(state.unit, vm::setUnit, enabled = state.calibration.isCalibrated) }
+        item {
+            OutlinedButton(onClick = vm::startMarking, enabled = !state.marking, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.CropFree, null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (state.shapes.isEmpty()) "Mark the sticker yourself" else "Wrong sticker? Mark it yourself")
+            }
+        }
         if (state.shapes.isEmpty()) {
-            item { EmptyState("No shapes found", "Try better lighting, a plain contrasting background, or retake the photo square to the object.") }
+            item { EmptyState("No sticker found", "Tap \"Mark the sticker yourself\" and drag a box over it, or retake the photo in better light, centred on the sticker.") }
         }
         itemsIndexed(state.shapes, key = { _, s -> s.id }) { i, shape ->
             val m = state.measurements[shape.id] ?: return@itemsIndexed
@@ -214,6 +237,7 @@ private fun CalibrationSheet(state: EditorState, vm: EditorViewModel, onDismiss:
     var customW by remember { mutableStateOf("") }
     var customH by remember { mutableStateOf("") }
     var ppiValue by remember { mutableStateOf("") }
+    var distanceValue by remember { mutableStateOf("") }
     val quad = selected?.points?.size == 4
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -223,6 +247,21 @@ private fun CalibrationSheet(state: EditorState, vm: EditorViewModel, onDismiss:
                 "A phone camera can't know real size on its own. Place a known reference flat on the same surface as the object.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            Text("Fixed camera distance (no reference)", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Distance from the phone's camera lens to the object's top surface, phone held flat and parallel to it. A stand or fixed mount gives repeatable results.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    distanceValue, { distanceValue = it }, Modifier.weight(1f),
+                    label = { Text("Distance (cm)") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                )
+                val cm = distanceValue.toDoubleOrNull()
+                TextButton(enabled = cm != null && cm > 0, onClick = { vm.useCameraDistance(cm!!); onDismiss() }) { Text("Apply") }
+            }
 
             ListItem(
                 headlineContent = { Text("SmartShape calibration marker") },

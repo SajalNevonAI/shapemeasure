@@ -146,13 +146,154 @@ bool classify(const std::vector<cv::Point> &contour, Shape &out) {
     return true;
 }
 
+// ---- Sticker detection -------------------------------------------------------------------------
+// Stickers are sharp rectangles that differ from their surroundings in one of three ways: much
+// brighter (plain white labels), densely printed and brighter (logo stickers), or strongly
+// coloured. Keyboard keys and other background rectangles are grey, plain and come in rows of
+// identical copies, which is how they are told apart. Thresholds were tuned on real photos of
+// laptop stickers; see the unit tests in the app for the measurement side.
+
+cv::Mat edgeMapScaled(const cv::Mat &blurred, double kLo, double kHi) {
+    const double m = medianIntensity(blurred);
+    const double lo = std::max(10.0, kLo * m);
+    const double hi = std::min(255.0, std::max(lo + 20.0, kHi * m));
+    cv::Mat edges;
+    cv::Canny(blurred, edges, lo, hi);
+    cv::morphologyEx(edges, edges, cv::MORPH_CLOSE,
+                     cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)), cv::Point(-1, -1), 2);
+    return edges;
+}
+
+struct Candidate {
+    std::vector<cv::Point2f> quad;
+    cv::Point2f centre;
+    float longSide, shortSide;
+    double area;
+};
+
+void addQuads(const cv::Mat &edges, std::vector<Candidate> &out) {
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(edges, contours, cv::RETR_LIST, cv::CHAIN_APPROX_NONE);
+    const double imageArea = static_cast<double>(edges.total());
+    for (const auto &c : contours) {
+        const double a = cv::contourArea(c);
+        if (a < 0.0015 * imageArea || a > 0.6 * imageArea) continue;
+        std::vector<cv::Point> approx;
+        cv::approxPolyDP(c, approx, 0.02 * cv::arcLength(c, true), true);
+        if (approx.size() != 4 || !cv::isContourConvex(approx)) continue;
+        const auto q = toFloat(approx);
+        double maxCos = 0;
+        for (int i = 0; i < 4; ++i) maxCos = std::max(maxCos, std::abs(cosAngle(q[(i + 3) % 4], q[i], q[(i + 1) % 4])));
+        if (maxCos > 0.3) continue;
+        const cv::RotatedRect r = cv::minAreaRect(q);
+        out.push_back({q, (q[0] + q[1] + q[2] + q[3]) * 0.25f, std::max(r.size.width, r.size.height),
+                       std::min(r.size.width, r.size.height), cv::contourArea(q)});
+    }
+}
+
+// Similar-sized rectangles in the same row, e.g. neighbouring keys.
+int rowSiblings(const Candidate &c, const std::vector<Candidate> &all) {
+    std::vector<cv::Point2f> seen;
+    for (const auto &o : all) {
+        const double d = cv::norm(o.centre - c.centre);
+        if (d < 2 || d > 3.5 * c.longSide) continue;
+        if (std::abs(o.longSide - c.longSide) > 0.12 * c.longSide || std::abs(o.shortSide - c.shortSide) > 0.12 * c.shortSide) continue;
+        if (std::abs(o.centre.y - c.centre.y) > 0.3 * c.shortSide) continue;
+        bool dup = false;  // the same key outlined by both edge passes
+        for (const auto &p : seen) dup |= cv::norm(o.centre - p) < 0.3 * c.shortSide;
+        if (!dup) seen.push_back(o.centre);
+    }
+    return static_cast<int>(seen.size());
+}
+
+std::vector<Shape> detectStickers(const cv::Mat &gray, const cv::Mat &rgb) {
+    cv::Mat blurred, fine, sat;
+    cv::GaussianBlur(gray, blurred, cv::Size(5, 5), 0);
+    cv::Canny(blurred, fine, 40, 120);  // print density inside a candidate
+    if (!rgb.empty()) {
+        cv::Mat hsv;
+        cv::cvtColor(rgb, hsv, cv::COLOR_RGB2HSV);
+        cv::extractChannel(hsv, sat, 1);
+    }
+
+    // Two edge passes: the usual one, and a sensitive one for low-contrast sticker borders.
+    std::vector<Candidate> cands;
+    addQuads(edgeMapScaled(blurred, 0.66, 1.33), cands);
+    addQuads(edgeMapScaled(blurred, 0.25, 0.5), cands);
+
+    // Thin edges cover a larger share of a small image, so the density bar rises as resolution drops.
+    const double densityThreshold = 0.06 * std::sqrt(1600.0 / std::max(gray.cols, gray.rows));
+    std::vector<std::pair<double, Shape>> found;
+    for (const auto &c : cands) {
+        const cv::Rect box = cv::boundingRect(c.quad);
+        // A sticker cut off by the frame edge can't be measured.
+        if (box.x <= 2 || box.y <= 2 || box.br().x >= gray.cols - 2 || box.br().y >= gray.rows - 2) continue;
+
+        const int kInner = std::max(3, static_cast<int>(c.shortSide * 0.12)) | 1;
+        const int kRing = std::max(5, static_cast<int>(c.shortSide * 0.25)) | 1;
+        const cv::Rect roi = (box + cv::Size(2 * kRing, 2 * kRing) - cv::Point(kRing, kRing)) & cv::Rect(0, 0, gray.cols, gray.rows);
+        cv::Mat mask = cv::Mat::zeros(roi.size(), CV_8U);
+        std::vector<cv::Point> local;
+        for (const auto &p : c.quad) local.emplace_back(cvRound(p.x) - roi.x, cvRound(p.y) - roi.y);
+        cv::fillConvexPoly(mask, local, 255);
+        cv::Mat inner, ring, grown;
+        cv::erode(mask, inner, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(kInner, kInner)));
+        cv::dilate(mask, ring, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(kRing, kRing)));
+        cv::dilate(mask, grown, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
+        ring &= ~grown;
+        if (cv::countNonZero(inner) == 0 || cv::countNonZero(ring) == 0) continue;
+
+        const cv::Mat g = blurred(roi);
+        const double contrast = cv::mean(g, mask)[0] - cv::mean(g, ring)[0];
+        const double density = cv::mean(fine(roi), inner)[0] / 255.0;
+        double sat90 = 0;
+        if (!sat.empty()) {
+            int hist[256] = {0}, n = 0;
+            const cv::Mat s = sat(roi);
+            for (int y = 0; y < s.rows; ++y)
+                for (int x = 0; x < s.cols; ++x)
+                    if (inner.at<uchar>(y, x)) { hist[s.at<uchar>(y, x)]++; ++n; }
+            for (int i = 255, acc = 0; i >= 0; --i) {
+                acc += hist[i];
+                if (acc >= n / 10) { sat90 = i; break; }
+            }
+        }
+
+        bool sticker;
+        if (sat90 > 120) sticker = true;                                   // coloured
+        else if (density > densityThreshold && contrast > 25) sticker = true;  // printed
+        else if (contrast > 80) sticker = rowSiblings(c, cands) < 2;           // plain bright, not a row of keys
+        else sticker = false;
+        if (!sticker) continue;
+
+        Shape shape{};
+        shape.points = c.quad;
+        shape.area = c.area;
+        shape.type = c.shortSide / c.longSide > 0.95 ? ShapeType::Square : ShapeType::Rectangle;
+        shape.confidence = static_cast<float>(std::min(1.0, 0.6 + std::max({contrast / 200.0, density, sat90 / 400.0})));
+        found.emplace_back(c.area, shape);
+    }
+
+    // Largest first; anything centred inside a kept sticker is its inner outline or a printed logo.
+    std::sort(found.begin(), found.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+    std::vector<Shape> out;
+    for (auto &f : found) {
+        const auto &q = f.second.points;
+        const cv::Point2f c = (q[0] + q[1] + q[2] + q[3]) * 0.25f;
+        bool nested = false;
+        for (const auto &k : out) nested |= cv::pointPolygonTest(k.points, c, false) >= 0;
+        if (!nested) out.push_back(std::move(f.second));
+    }
+    return out;
+}
+
 bool isVertexShape(ShapeType t) {
     return t == ShapeType::Rectangle || t == ShapeType::Square || t == ShapeType::Triangle || t == ShapeType::Polygon;
 }
 
 }  // namespace
 
-std::vector<Shape> detectShapes(const cv::Mat &gray, const DetectorParams &params) {
+std::vector<Shape> detectShapes(const cv::Mat &gray, const DetectorParams &params, const cv::Mat &rgb) {
     std::vector<Shape> shapes;
     if (gray.empty() || gray.type() != CV_8UC1) return shapes;
 
@@ -162,15 +303,24 @@ std::vector<Shape> detectShapes(const cv::Mat &gray, const DetectorParams &param
     if (scale < 1.0) cv::resize(gray, work, cv::Size(), scale, scale, cv::INTER_AREA);
     else work = gray;
 
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(edgeMap(work), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    if (params.stickersOnly) {
+        cv::Mat workRgb;
+        if (!rgb.empty()) {
+            if (scale < 1.0) cv::resize(rgb, workRgb, work.size(), 0, 0, cv::INTER_AREA);
+            else workRgb = rgb;
+        }
+        shapes = detectStickers(work, workRgb);
+    } else {
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(edgeMap(work), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
 
-    const double imageArea = static_cast<double>(work.total());
-    for (const auto &c : contours) {
-        const double a = cv::contourArea(c);
-        if (a < params.minAreaFraction * imageArea || a > params.maxAreaFraction * imageArea) continue;
-        Shape s{};
-        if (classify(c, s)) shapes.push_back(std::move(s));
+        const double imageArea = static_cast<double>(work.total());
+        for (const auto &c : contours) {
+            const double a = cv::contourArea(c);
+            if (a < params.minAreaFraction * imageArea || a > params.maxAreaFraction * imageArea) continue;
+            Shape s{};
+            if (classify(c, s)) shapes.push_back(std::move(s));
+        }
     }
 
     std::sort(shapes.begin(), shapes.end(), [](const Shape &a, const Shape &b) { return a.area > b.area; });

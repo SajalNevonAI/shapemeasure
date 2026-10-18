@@ -35,6 +35,7 @@ enum class CalibrationSource(val label: String) {
     REFERENCE_OBJECT("Reference object"),
     KNOWN_DIMENSION("Known dimension"),
     IMAGE_PPI("Image resolution (PPI)"),
+    CAMERA_DISTANCE("Fixed camera distance"),
 }
 
 /** Pixel → millimetre mapping for one image. [matrix] is null when uncalibrated. */
@@ -56,6 +57,15 @@ data class Calibration(
         fun of(source: CalibrationSource, h: Homography, note: String? = null) =
             Calibration(source, h.m.toList(), note)
     }
+}
+
+/**
+ * The single object to measure: the outline whose centroid is nearest the image centre (the user
+ * aims at the object), so edges, shadows and clutter near the frame border are ignored.
+ */
+fun List<DetectedShape>.primary(width: Int, height: Int): DetectedShape? {
+    val c = Point2(width / 2.0, height / 2.0)
+    return minByOrNull { Polygons.centroid(it.points).distanceTo(c) }
 }
 
 /** Common physical references users can place next to the object. */

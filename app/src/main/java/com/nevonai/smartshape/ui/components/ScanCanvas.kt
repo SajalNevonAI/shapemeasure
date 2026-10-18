@@ -69,6 +69,9 @@ fun ScanCanvas(
     showShapes: Boolean = true,
     onSelect: (Int?) -> Unit = {},
     onMoveVertex: ((shapeId: Int, index: Int, point: Point2) -> Unit)? = null,
+    /** While true, dragging draws a box and reports its four corners (image px) through [onMarked]. */
+    markMode: Boolean = false,
+    onMarked: (List<Point2>) -> Unit = {},
 ) {
     val textMeasurer = rememberTextMeasurer()
     val haptics = LocalHapticFeedback.current
@@ -77,6 +80,8 @@ fun ScanCanvas(
     var dragPos by remember { mutableStateOf(Offset.Zero) }
     val currentShapes by rememberUpdatedState(shapes)
     val currentSelected by rememberUpdatedState(selectedId)
+    var markStart by remember { mutableStateOf<Offset?>(null) }
+    var markEnd by remember { mutableStateOf(Offset.Zero) }
     val pulse by animateFloatAsState(if (selectedId != null) 1f else 0f, tween(260), label = "select")
 
     Box(modifier.aspectRatio(image.width.toFloat() / image.height)) {
@@ -84,8 +89,29 @@ fun ScanCanvas(
         Canvas(
             Modifier
                 .fillMaxSize()
-                .pointerInput(showShapes) {
-                    if (!showShapes) return@pointerInput
+                .pointerInput(markMode) {
+                    if (!markMode) return@pointerInput
+                    detectDragGestures(
+                        onDragStart = { markStart = it; markEnd = it },
+                        onDragCancel = { markStart = null },
+                        onDragEnd = {
+                            val a = markStart ?: return@detectDragGestures
+                            markStart = null
+                            val s = size.width / image.width.toFloat()
+                            val l = minOf(a.x, markEnd.x) / s; val r = maxOf(a.x, markEnd.x) / s
+                            val t = minOf(a.y, markEnd.y) / s; val b = maxOf(a.y, markEnd.y) / s
+                            // Ignore accidental taps: the box must be at least a few screen dp across.
+                            if ((r - l) * s < handleRadiusPx || (b - t) * s < handleRadiusPx) return@detectDragGestures
+                            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                            onMarked(listOf(Point2(l.toDouble(), t.toDouble()), Point2(r.toDouble(), t.toDouble()), Point2(r.toDouble(), b.toDouble()), Point2(l.toDouble(), b.toDouble())))
+                        },
+                    ) { change, amount ->
+                        change.consume()
+                        markEnd = Offset((markEnd.x + amount.x).coerceIn(0f, size.width.toFloat()), (markEnd.y + amount.y).coerceIn(0f, size.height.toFloat()))
+                    }
+                }
+                .pointerInput(showShapes, markMode) {
+                    if (!showShapes || markMode) return@pointerInput
                     detectTapGestures { tap ->
                         val s = size.width / image.width.toFloat()
                         val p = Point2(tap.x / s.toDouble(), tap.y / s.toDouble())
@@ -95,8 +121,8 @@ fun ScanCanvas(
                         onSelect(if (hit?.id == currentSelected) null else hit?.id)
                     }
                 }
-                .pointerInput(showShapes, onMoveVertex != null) {
-                    if (!showShapes || onMoveVertex == null) return@pointerInput
+                .pointerInput(showShapes, onMoveVertex != null, markMode) {
+                    if (!showShapes || onMoveVertex == null || markMode) return@pointerInput
                     detectDragGestures(
                         onDragStart = { start ->
                             val s = size.width / image.width.toFloat()
@@ -158,6 +184,13 @@ fun ScanCanvas(
                 drawLabel(textMeasurer, if (isReference) "Reference" else label, toOffset(Polygons.centroid(shape.points), s), color, selected)
             }
 
+            markStart?.let { a ->
+                val tl = Offset(minOf(a.x, markEnd.x), minOf(a.y, markEnd.y))
+                val sz = Size(kotlin.math.abs(markEnd.x - a.x), kotlin.math.abs(markEnd.y - a.y))
+                drawRect(Color(0xFF34D399).copy(alpha = 0.18f), tl, sz)
+                drawRect(Color(0xFF34D399), tl, sz, style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f))))
+                drawLoupe(image, markEnd, s)
+            }
             drag?.let { drawLoupe(image, dragPos, s) }
         }
     }
@@ -186,7 +219,8 @@ private fun DrawScope.drawLabel(
     val padV = 4.dp.toPx()
     val w = layout.size.width + 2 * padH
     val h = layout.size.height + 2 * padV
-    val tl = Offset((center.x - w / 2).coerceIn(0f, size.width - w), (center.y - h / 2).coerceIn(0f, size.height - h))
+    // Keep the label on the image; if it's wider/taller than the image itself, pin it to the edge.
+    val tl = Offset((center.x - w / 2).coerceIn(0f, (size.width - w).coerceAtLeast(0f)), (center.y - h / 2).coerceIn(0f, (size.height - h).coerceAtLeast(0f)))
     drawRoundRect(if (selected) color else Color(0xCC111320), tl, Size(w, h), CornerRadius(h / 2))
     if (!selected) drawRoundRect(color, tl, Size(w, h), CornerRadius(h / 2), style = Stroke(1.dp.toPx()))
     drawText(layout, topLeft = tl + Offset(padH, padV))

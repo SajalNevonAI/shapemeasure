@@ -29,9 +29,11 @@ struct DetectorParams {
     double maxAreaFraction = 0.90;  // ignore the frame border / whole background
     int maxShapes = 8;
     bool refineCorners = true;      // sub-pixel corner refinement at full resolution (captures only)
+    bool stickersOnly = true;       // keep only sticker-like rectangles (see detectStickers)
 };
 
-// Detects and classifies the outer outlines of objects in a grayscale image.
-std::vector<Shape> detectShapes(const cv::Mat &gray, const DetectorParams &params);
+// Detects and classifies the outer outlines of objects in a grayscale image. [rgb] is an optional
+// 8-bit RGB copy of the same image; when given, colour helps recognise coloured stickers.
+std::vector<Shape> detectShapes(const cv::Mat &gray, const DetectorParams &params, const cv::Mat &rgb = cv::Mat());
 
 }  // namespace smartshape

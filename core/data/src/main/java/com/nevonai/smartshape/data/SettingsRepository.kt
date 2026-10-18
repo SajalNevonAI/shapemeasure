@@ -2,6 +2,7 @@ package com.nevonai.smartshape.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -20,6 +21,10 @@ data class AppSettings(
     val haptics: Boolean = true,
     val showGrid: Boolean = true,
     val onboardingDone: Boolean = false,
+    /** Lens-to-object distance for reference-free measurement; 0 turns it off. */
+    val cameraDistanceMm: Double = 250.0,
+    /** Back camera focal length / sensor long side, read from Camera2 when the scanner opens. */
+    val focalNorm: Double? = null,
 )
 
 private val Context.settingsStore by preferencesDataStore("settings")
@@ -33,6 +38,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext private val con
         val haptics = booleanPreferencesKey("haptics")
         val grid = booleanPreferencesKey("grid")
         val onboarding = booleanPreferencesKey("onboarding_done")
+        val distance = doublePreferencesKey("camera_distance_mm")
+        val focal = doublePreferencesKey("focal_norm")
     }
 
     val settings: Flow<AppSettings> = context.settingsStore.data.map { p ->
@@ -42,6 +49,8 @@ class SettingsRepository @Inject constructor(@ApplicationContext private val con
             haptics = p[Keys.haptics] ?: true,
             showGrid = p[Keys.grid] ?: true,
             onboardingDone = p[Keys.onboarding] ?: false,
+            cameraDistanceMm = p[Keys.distance] ?: 250.0,
+            focalNorm = p[Keys.focal],
         )
     }
 
@@ -49,5 +58,7 @@ class SettingsRepository @Inject constructor(@ApplicationContext private val con
     suspend fun setTheme(mode: ThemeMode) { context.settingsStore.edit { it[Keys.theme] = mode.name } }
     suspend fun setHaptics(on: Boolean) { context.settingsStore.edit { it[Keys.haptics] = on } }
     suspend fun setGrid(on: Boolean) { context.settingsStore.edit { it[Keys.grid] = on } }
+    suspend fun setCameraDistance(mm: Double) { context.settingsStore.edit { it[Keys.distance] = mm } }
+    suspend fun setFocalNorm(v: Double) { context.settingsStore.edit { it[Keys.focal] = v } }
     suspend fun setOnboardingDone() { context.settingsStore.edit { it[Keys.onboarding] = true } }
 }

@@ -51,6 +51,18 @@ object MeasurementEngine {
         return Calibration.of(CalibrationSource.IMAGE_PPI, Homography.scale(25.4 / ppi), "${Formats.number(ppi, 0)} PPI")
     }
 
+    /**
+     * Scale-only calibration from a fixed, known camera distance (pinhole model):
+     * mm per pixel = distance / focal length in pixels. [focalNorm] is the lens focal length divided
+     * by the sensor's long side (both mm), so focal length in pixels = focalNorm * image long side.
+     * Valid when the camera is held parallel to a flat object at [distanceMm] from the lens.
+     */
+    fun fromCameraDistance(distanceMm: Double, focalNorm: Double, imageLongSidePx: Int, source: String = "from camera"): Calibration? {
+        if (distanceMm <= 0 || focalNorm <= 0 || imageLongSidePx <= 0) return null
+        val mmPerPx = distanceMm / (focalNorm * imageLongSidePx)
+        return Calibration.of(CalibrationSource.CAMERA_DISTANCE, Homography.scale(mmPerPx), "${Formats.number(distanceMm / 10, 1)} cm $source")
+    }
+
     private fun rectangle(p: List<Point2>): List<Dimension> {
         if (p.size != 4) return polygon(p)
         val e = Polygons.edges(p)

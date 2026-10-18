@@ -89,4 +89,39 @@ class MeasurementEngineTest {
         val q = orderQuad(listOf(Point2(10.0, 90.0), Point2(90.0, 10.0), Point2(10.0, 10.0), Point2(90.0, 90.0)))
         assertEquals(listOf(Point2(10.0, 10.0), Point2(90.0, 10.0), Point2(90.0, 90.0), Point2(10.0, 90.0)), q)
     }
+
+    @Test
+    fun cameraDistanceUsesPinholeScale() {
+        // 4 mm lens on a 6.4 mm-wide sensor, 4000 px image: focal = 2500 px. At 300 mm, 1 px = 0.12 mm.
+        val cal = MeasurementEngine.fromCameraDistance(300.0, 4.0 / 6.4, 4000)!!
+        val rect = DetectedShape(1, ShapeType.RECTANGLE, 1f, listOf(Point2(0.0, 0.0), Point2(500.0, 0.0), Point2(500.0, 250.0), Point2(0.0, 250.0)))
+        val d = dims(MeasurementEngine.measure(rect, cal))
+        assertEquals(60.0, d.getValue("Length"), 1e-9)
+        assertEquals(30.0, d.getValue("Width"), 1e-9)
+    }
+
+    @Test
+    fun ppiMatchesCentimetreFormula() {
+        // cm = px * 2.54 / ppi: 300 px at 300 PPI = 2.54 cm.
+        val cal = MeasurementEngine.fromPpi(300.0)!!
+        assertEquals(25.4, MeasurementEngine.distance(Point2(0.0, 0.0), Point2(300.0, 0.0), cal), 1e-9)
+    }
+
+    @Test
+    fun primaryPicksShapeNearestCentre() {
+        fun sq(x: Double, y: Double, s: Double, id: Int) =
+            DetectedShape(id, ShapeType.SQUARE, 1f, listOf(Point2(x, y), Point2(x + s, y), Point2(x + s, y + s), Point2(x, y + s)))
+        val big = sq(0.0, 800.0, 400.0, 1) // large, near the bottom edge
+        val centred = sq(450.0, 450.0, 100.0, 2)
+        assertEquals(2, listOf(big, centred).primary(1000, 1000)?.id)
+    }
+
+    @Test
+    fun s23UltraFocusCorrectionMatchesBoxPhotos() {
+        // Reported autofocus distance -> distance implied by the 75 mm box in the same photo.
+        val c = FocusCorrection.forDevice("SM-S918B")
+        assertEquals(164.0, c.trueDistanceMm(148.0)!!, 6.0)
+        assertEquals(314.0, c.trueDistanceMm(242.0)!!, 12.0)
+        assertEquals(250.0, FocusCorrection.forDevice("Pixel 9").trueDistanceMm(250.0)!!, 1e-9)
+    }
 }
