@@ -121,7 +121,29 @@ class MeasurementEngineTest {
         // Reported autofocus distance -> distance implied by the 75 mm box in the same photo.
         val c = FocusCorrection.forDevice("SM-S918B")
         assertEquals(164.0, c.trueDistanceMm(148.0)!!, 6.0)
-        assertEquals(314.0, c.trueDistanceMm(242.0)!!, 12.0)
+        assertEquals(314.0, c.trueDistanceMm(242.0)!!, 15.0)
+        assertEquals(232.0, c.trueDistanceMm(205.0)!!, 20.0)
         assertEquals(250.0, FocusCorrection.forDevice("Pixel 9").trueDistanceMm(250.0)!!, 1e-9)
+    }
+
+    @Test
+    fun edgeHandleMovesWholeSideAlongItsNormal() {
+        val box = DetectedShape(1, ShapeType.RECTANGLE, 1f, listOf(Point2(0.0, 0.0), Point2(100.0, 0.0), Point2(100.0, 50.0), Point2(0.0, 50.0)))
+        val right = ShapeEditing.handles(box).filterIsInstance<EdgeHandle>().first { it.index == 1 }
+        // Diagonal drag: only the horizontal part moves the right side; the box stays a rectangle.
+        val p = ShapeEditing.drag(box, right, Point2(20.0, 7.0))
+        assertEquals(listOf(Point2(0.0, 0.0), Point2(120.0, 0.0), Point2(120.0, 50.0), Point2(0.0, 50.0)), p)
+    }
+
+    @Test
+    fun circleSideHandleResizesAndRetypes() {
+        val c = DetectedShape(1, ShapeType.CIRCLE, 1f, ShapeEditing.ellipseIn(0.0, 0.0, 100.0, 100.0))
+        val right = ShapeEditing.handles(c).filterIsInstance<SideHandle>().first { it.side == Side.RIGHT }
+        val p = ShapeEditing.drag(c, right, Point2(50.0, 0.0))
+        assertEquals(150.0, p.maxOf { it.x } - p.minOf { it.x }, 1e-6)
+        assertEquals(ShapeType.ELLIPSE, ShapeEditing.retype(ShapeType.CIRCLE, p))
+        val moved = ShapeEditing.drag(c, ShapeEditing.handles(c).filterIsInstance<MoveHandle>().single(), Point2(10.0, 20.0))
+        assertEquals(60.0, moved.map { it.x }.average(), 1e-6)
+        assertEquals(70.0, moved.map { it.y }.average(), 1e-6)
     }
 }

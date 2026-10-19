@@ -159,7 +159,10 @@ private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, on
     // The shutter unlocks only when the phone is at the fixed measuring distance.
     val targetMm = settings.cameraDistanceMm
     val atTarget = distanceMm?.let { kotlin.math.abs(it - targetMm) <= DISTANCE_TOLERANCE_MM } == true
+    // At the measuring distance with a sticker in view: it turns blue, with a second tick.
+    val stickerReady = atTarget && live.shapes.isNotEmpty()
     LaunchedEffect(atTarget) { if (atTarget) haptics.performHapticFeedback(HapticFeedbackType.SegmentTick) }
+    LaunchedEffect(stickerReady) { if (stickerReady) haptics.performHapticFeedback(HapticFeedbackType.Confirm) }
 
     var showGrid by remember(settings.showGrid) { mutableStateOf(settings.showGrid) }
     var flashMode by remember { mutableIntStateOf(ImageCapture.FLASH_MODE_OFF) }
@@ -218,7 +221,7 @@ private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, on
                 .weight(1f),
         ) {
             AndroidView({ previewView }, Modifier.fillMaxSize())
-            LiveOverlay(live, Modifier.fillMaxSize())
+            LiveOverlay(live, highlight = stickerReady, modifier = Modifier.fillMaxSize())
             if (showGrid) GridOverlay(Modifier.fillMaxSize())
             Box(
                 Modifier
@@ -290,7 +293,7 @@ private fun CameraContent(vm: ScannerViewModel, onCaptured: (String) -> Unit, on
 
 /** Live outlines in analysis-frame coordinates, mapped like PreviewView's FILL_CENTER. */
 @Composable
-private fun LiveOverlay(live: LiveFrame, modifier: Modifier) {
+private fun LiveOverlay(live: LiveFrame, highlight: Boolean, modifier: Modifier) {
     val phase by rememberInfiniteTransition(label = "ants").animateFloat(0f, 40f, infiniteRepeatable(tween(900, easing = LinearEasing)), label = "phase")
     Canvas(modifier) {
         if (live.width == 0) return@Canvas
@@ -306,9 +309,16 @@ private fun LiveOverlay(live: LiveFrame, modifier: Modifier) {
                 }
                 close()
             }
-            val color = shape.type.overlayColor()
-            drawPath(path, color.copy(alpha = 0.12f))
-            drawPath(path, color, style = Stroke(2.5.dp.toPx(), join = StrokeJoin.Round, pathEffect = PathEffect.dashPathEffect(floatArrayOf(22f, 18f), phase)))
+            if (highlight) {
+                // Detected at the measuring distance: solid blue so it's obvious the sticker is locked on.
+                drawPath(path, StickerBlue.copy(alpha = 0.28f))
+                drawPath(path, Color.White, style = Stroke(6.dp.toPx(), join = StrokeJoin.Round))
+                drawPath(path, StickerBlue, style = Stroke(4.dp.toPx(), join = StrokeJoin.Round))
+            } else {
+                val color = shape.type.overlayColor()
+                drawPath(path, color.copy(alpha = 0.12f))
+                drawPath(path, color, style = Stroke(2.5.dp.toPx(), join = StrokeJoin.Round, pathEffect = PathEffect.dashPathEffect(floatArrayOf(22f, 18f), phase)))
+            }
         }
     }
 }
@@ -349,10 +359,12 @@ private fun HintChip(live: LiveFrame, distanceMm: Double?, targetMm: Double, mod
         distanceMm < targetMm - DISTANCE_TOLERANCE_MM -> Triple("Move phone back ↑  ${cm(distanceMm)} cm → ${cm(targetMm)} cm", true, false)
         distanceMm > targetMm + DISTANCE_TOLERANCE_MM -> Triple("Move phone closer ↓  ${cm(distanceMm)} cm → ${cm(targetMm)} cm", true, false)
         q?.isBlurry == true -> Triple("${cm(targetMm)} cm · hold steady", false, false)
-        else -> Triple("✓ ${cm(distanceMm)} cm – ready, take the photo", false, true)
+        live.shapes.isEmpty() -> Triple("✓ ${cm(distanceMm)} cm – centre the sticker", false, true)
+        else -> Triple("✓ ${cm(distanceMm)} cm · sticker detected – take the photo", false, true)
     }
     AnimatedVisibility(visible = true, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
-        Surface(shape = CircleShape, color = when { ready -> Color(0xE6059669); warn -> Color(0xE6B45309); else -> Color.Black.copy(alpha = 0.55f) }) {
+        val detected = ready && live.shapes.isNotEmpty()
+        Surface(shape = CircleShape, color = when { detected -> StickerBlue.copy(alpha = 0.92f); ready -> Color(0xE6059669); warn -> Color(0xE6B45309); else -> Color.Black.copy(alpha = 0.55f) }) {
             Text(text, color = Color.White, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         }
     }
@@ -372,6 +384,9 @@ private fun ShutterButton(ready: Boolean, onClick: () -> Unit) {
             .clickable(enabled = ready, onClickLabel = "Capture photo", onClick = onClick),
     )
 }
+
+/** Highlight for a sticker detected at the measuring distance. */
+private val StickerBlue = Color(0xFF2563EB)
 
 /** How far from the fixed distance the phone may be and still take a photo (±1 cm). */
 private const val DISTANCE_TOLERANCE_MM = 10.0

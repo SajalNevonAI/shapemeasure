@@ -165,13 +165,15 @@ cv::Mat edgeMapScaled(const cv::Mat &blurred, double kLo, double kHi) {
 }
 
 struct Candidate {
-    std::vector<cv::Point2f> quad;
+    std::vector<cv::Point2f> quad;  // 4 corners, or a sampled outline for round candidates
     cv::Point2f centre;
     float longSide, shortSide;
     double area;
+    bool round = false;             // circle / ellipse
 };
 
-void addQuads(const cv::Mat &edges, std::vector<Candidate> &out) {
+// Rectangles (4 near-right-angle corners) and circles/ellipses (contour fits an ellipse closely).
+void addCandidates(const cv::Mat &edges, std::vector<Candidate> &out) {
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(edges, contours, cv::RETR_LIST, cv::CHAIN_APPROX_NONE);
     const double imageArea = static_cast<double>(edges.total());
@@ -180,14 +182,40 @@ void addQuads(const cv::Mat &edges, std::vector<Candidate> &out) {
         if (a < 0.0015 * imageArea || a > 0.6 * imageArea) continue;
         std::vector<cv::Point> approx;
         cv::approxPolyDP(c, approx, 0.02 * cv::arcLength(c, true), true);
-        if (approx.size() != 4 || !cv::isContourConvex(approx)) continue;
+        if (approx.size() >= 6 && c.size() >= 5) {
+            const cv::RotatedRect e = cv::fitEllipse(c);
+            const double ellipseArea = kPi * e.size.width * e.size.height / 4.0;
+            if (ellipseResidual(c, e) < 0.03 && std::abs(ellipseArea - a) / a < 0.05) {
+                Candidate cand;
+                cand.quad = sampleEllipse(e);
+                cand.centre = e.center;
+                cand.longSide = std::max(e.size.width, e.size.height);
+                cand.shortSide = std::min(e.size.width, e.size.height);
+                cand.area = ellipseArea;
+                cand.round = true;
+                out.push_back(std::move(cand));
+                continue;
+            }
+            // Not an ellipse: may still be a rectangle whose outline is dented by edge printing (below).
+        }
+        if (approx.size() != 4 || !cv::isContourConvex(approx)) {
+            // Printing that touches an edge dents the outline; judge the shape by its hull instead,
+            // provided the outline still fills that hull (so irregular objects aren't taken for rectangles).
+            std::vector<cv::Point> hull, hullApprox;
+            cv::convexHull(c, hull);
+            const double hullArea = cv::contourArea(hull);
+            if (hullArea <= 0 || a / hullArea < 0.9) continue;
+            cv::approxPolyDP(hull, hullApprox, 0.02 * cv::arcLength(hull, true), true);
+            if (hullApprox.size() != 4) continue;
+            approx = hullApprox;
+        }
         const auto q = toFloat(approx);
         double maxCos = 0;
         for (int i = 0; i < 4; ++i) maxCos = std::max(maxCos, std::abs(cosAngle(q[(i + 3) % 4], q[i], q[(i + 1) % 4])));
         if (maxCos > 0.3) continue;
         const cv::RotatedRect r = cv::minAreaRect(q);
         out.push_back({q, (q[0] + q[1] + q[2] + q[3]) * 0.25f, std::max(r.size.width, r.size.height),
-                       std::min(r.size.width, r.size.height), cv::contourArea(q)});
+                       std::min(r.size.width, r.size.height), cv::contourArea(q), false});
     }
 }
 
@@ -195,6 +223,7 @@ void addQuads(const cv::Mat &edges, std::vector<Candidate> &out) {
 int rowSiblings(const Candidate &c, const std::vector<Candidate> &all) {
     std::vector<cv::Point2f> seen;
     for (const auto &o : all) {
+        if (o.round) continue;
         const double d = cv::norm(o.centre - c.centre);
         if (d < 2 || d > 3.5 * c.longSide) continue;
         if (std::abs(o.longSide - c.longSide) > 0.12 * c.longSide || std::abs(o.shortSide - c.shortSide) > 0.12 * c.shortSide) continue;
@@ -218,8 +247,8 @@ std::vector<Shape> detectStickers(const cv::Mat &gray, const cv::Mat &rgb) {
 
     // Two edge passes: the usual one, and a sensitive one for low-contrast sticker borders.
     std::vector<Candidate> cands;
-    addQuads(edgeMapScaled(blurred, 0.66, 1.33), cands);
-    addQuads(edgeMapScaled(blurred, 0.25, 0.5), cands);
+    addCandidates(edgeMapScaled(blurred, 0.66, 1.33), cands);
+    addCandidates(edgeMapScaled(blurred, 0.25, 0.5), cands);
 
     // Thin edges cover a larger share of a small image, so the density bar rises as resolution drops.
     const double densityThreshold = 0.06 * std::sqrt(1600.0 / std::max(gray.cols, gray.rows));
@@ -262,14 +291,15 @@ std::vector<Shape> detectStickers(const cv::Mat &gray, const cv::Mat &rgb) {
         bool sticker;
         if (sat90 > 120) sticker = true;                                   // coloured
         else if (density > densityThreshold && contrast > 25) sticker = true;  // printed
-        else if (contrast > 80) sticker = rowSiblings(c, cands) < 2;           // plain bright, not a row of keys
+        else if (contrast > 80) sticker = c.round || rowSiblings(c, cands) < 2;  // plain bright, not a row of keys
         else sticker = false;
         if (!sticker) continue;
 
         Shape shape{};
         shape.points = c.quad;
         shape.area = c.area;
-        shape.type = c.shortSide / c.longSide > 0.95 ? ShapeType::Square : ShapeType::Rectangle;
+        if (c.round) shape.type = c.shortSide / c.longSide > 0.92 ? ShapeType::Circle : ShapeType::Ellipse;
+        else shape.type = c.shortSide / c.longSide > 0.95 ? ShapeType::Square : ShapeType::Rectangle;
         shape.confidence = static_cast<float>(std::min(1.0, 0.6 + std::max({contrast / 200.0, density, sat90 / 400.0})));
         found.emplace_back(c.area, shape);
     }
@@ -279,7 +309,9 @@ std::vector<Shape> detectStickers(const cv::Mat &gray, const cv::Mat &rgb) {
     std::vector<Shape> out;
     for (auto &f : found) {
         const auto &q = f.second.points;
-        const cv::Point2f c = (q[0] + q[1] + q[2] + q[3]) * 0.25f;
+        cv::Point2f c(0, 0);
+        for (const auto &p : q) c += p;
+        c *= 1.0f / static_cast<float>(q.size());
         bool nested = false;
         for (const auto &k : out) nested |= cv::pointPolygonTest(k.points, c, false) >= 0;
         if (!nested) out.push_back(std::move(f.second));

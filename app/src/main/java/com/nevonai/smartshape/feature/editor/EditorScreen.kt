@@ -12,6 +12,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.rounded.FitScreen
+import androidx.compose.material.icons.rounded.ZoomIn
+import androidx.compose.material.icons.rounded.ZoomOut
+import com.nevonai.smartshape.model.BoxF
+import com.nevonai.smartshape.model.ShapeEditing
+import com.nevonai.smartshape.ui.components.ZoomableContent
+import com.nevonai.smartshape.ui.components.rememberZoomState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
@@ -117,7 +132,15 @@ fun EditorScreen(onSaved: (Long) -> Unit, onBack: () -> Unit, vm: EditorViewMode
             image == null -> EmptyState("Couldn't open image", state.error ?: "Unknown error", Modifier.padding(padding))
             else -> Column(Modifier.fillMaxSize().padding(padding)) {
                 val imageBitmap = remember(image) { image.asImageBitmap() }
+                val zoom = rememberZoomState()
+                val textTab = state.tab == EditorTab.TEXT
+                // Boxes to highlight in the Text tab: search matches, plus the tapped line (drawn last, as active).
+                val textBoxes = if (textTab) state.matches.flatMap { it.boxes } + listOfNotNull(state.focusBox) else emptyList()
+                val activeBox = if (state.focusBox != null) textBoxes.lastIndex else activeBoxIndex(state)
+                val zoomTarget = state.focusBox ?: state.matches.getOrNull(state.activeMatch)?.boxes?.let(::union)
+                LaunchedEffect(textTab, zoomTarget) { if (textTab && zoomTarget != null) zoom.focusOn(zoomTarget, image.width) }
                 Box(Modifier.fillMaxWidth().weight(0.52f).padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                  ZoomableContent(zoom, enabled = textTab, modifier = Modifier.fillMaxSize()) {
                     ScanCanvas(
                         image = imageBitmap,
                         shapes = state.shapes,
@@ -126,25 +149,24 @@ fun EditorScreen(onSaved: (Long) -> Unit, onBack: () -> Unit, vm: EditorViewMode
                         selectedId = state.selectedId,
                         referenceId = state.referenceShapeId,
                         markerOutline = state.markerCorners,
-                        highlights = if (state.tab == EditorTab.TEXT) state.matches.flatMap { it.boxes } else emptyList(),
-                        activeHighlight = activeBoxIndex(state),
+                        highlights = textBoxes,
+                        activeHighlight = activeBox,
                         showShapes = state.tab == EditorTab.MEASURE,
                         onSelect = vm::select,
-                        onMoveVertex = vm::moveVertex,
+                        onEditShape = vm::editShape,
                         markMode = state.marking,
+                        markRound = state.markRound,
                         onMarked = vm::markSticker,
                     )
-                    if (state.marking) {
-                        Surface(
-                            shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.inverseSurface,
-                            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
-                        ) {
-                            Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text("Drag a box over the sticker", color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.labelLarge)
-                                TextButton(onClick = vm::cancelMarking) { Text("Cancel", color = MaterialTheme.colorScheme.inversePrimary) }
-                            }
+                  }
+                    if (textTab) {
+                        Column(Modifier.align(Alignment.BottomEnd).padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SmallFloatingActionButton(onClick = { zoom.zoomBy(1.6f) }) { Icon(Icons.Rounded.ZoomIn, "Zoom in") }
+                            SmallFloatingActionButton(onClick = { zoom.zoomBy(1 / 1.6f) }) { Icon(Icons.Rounded.ZoomOut, "Zoom out") }
+                            if (zoom.isZoomed) SmallFloatingActionButton(onClick = zoom::reset) { Icon(Icons.Rounded.FitScreen, "Fit photo") }
                         }
                     }
+                    if (state.marking && !textTab) MarkingBar(round = state.markRound, onRound = vm::setMarkRound, onCancel = vm::cancelMarking, modifier = Modifier.align(Alignment.TopCenter))
                 }
                 PrimaryTabRow(selectedTabIndex = state.tab.ordinal) {
                     Tab(state.tab == EditorTab.MEASURE, onClick = { vm.selectTab(EditorTab.MEASURE) }, text = { Text("Measure (${state.shapes.size})") })
@@ -160,6 +182,8 @@ fun EditorScreen(onSaved: (Long) -> Unit, onBack: () -> Unit, vm: EditorViewMode
                                 activeMatch = state.activeMatch, onQuery = vm::search, onStep = vm::nextMatch,
                                 onCopy = { Exporter.copyToClipboard(context, "Scanned text", state.ocr?.text.orEmpty()) },
                                 onRerun = vm::runOcr,
+                                focusedLine = state.focusBox,
+                                onLineClick = { line -> vm.focusText(if (line.box == state.focusBox) null else line.box) },
                             )
                         }
                     }
@@ -181,6 +205,38 @@ fun EditorScreen(onSaved: (Long) -> Unit, onBack: () -> Unit, vm: EditorViewMode
         },
     )
 }
+
+/** Compact two-line bar shown while marking: instruction, then shape choice and Cancel. Fits narrow screens. */
+@Composable
+private fun MarkingBar(round: Boolean, onRound: (Boolean) -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(14.dp), color = Color.Black.copy(alpha = 0.72f),
+        modifier = modifier.padding(6.dp).widthIn(max = 420.dp).fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 4.dp)) {
+            Text(
+                if (round) "Drag over the circle" else "Drag a box over the sticker",
+                color = Color.White, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val colors = SegmentedButtonDefaults.colors(
+                    activeContainerColor = MaterialTheme.colorScheme.primary, activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                    inactiveContainerColor = Color.Transparent, inactiveContentColor = Color.White,
+                    activeBorderColor = MaterialTheme.colorScheme.primary, inactiveBorderColor = Color.White.copy(alpha = 0.5f),
+                )
+                SingleChoiceSegmentedButtonRow(Modifier.weight(1f).height(36.dp)) {
+                    SegmentedButton(!round, { onRound(false) }, SegmentedButtonDefaults.itemShape(0, 2), colors = colors, icon = {}) { Text("Box", maxLines = 1) }
+                    SegmentedButton(round, { onRound(true) }, SegmentedButtonDefaults.itemShape(1, 2), colors = colors, icon = {}) { Text("Circle", maxLines = 1) }
+                }
+                TextButton(onClick = onCancel) { Text("Cancel", color = MaterialTheme.colorScheme.inversePrimary, maxLines = 1) }
+            }
+        }
+    }
+}
+
+private fun union(boxes: List<BoxF>): BoxF? = if (boxes.isEmpty()) null else BoxF(
+    boxes.minOf { it.left }, boxes.minOf { it.top }, boxes.maxOf { it.right }, boxes.maxOf { it.bottom },
+)
 
 private fun activeBoxIndex(state: EditorState): Int {
     if (state.matches.isEmpty()) return -1
@@ -220,8 +276,15 @@ private fun MeasurePanel(state: EditorState, vm: EditorViewModel, onCalibrate: (
                     AssistChip(onClick = onCalibrate, label = { Text("Use as reference") }, leadingIcon = { Icon(Icons.Rounded.Straighten, null) })
                     AssistChip(onClick = { vm.deleteShape(shape.id) }, label = { Text("Remove") }, leadingIcon = { Icon(Icons.Rounded.Delete, null) })
                 }
-                if (shape.hasEditableVertices) {
-                    Text("Drag the corner handles on the image to adjust.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                run {
+                    Text(
+                        when {
+                            ShapeEditing.isRound(shape.type) -> "Drag the side dots to resize, the centre to move."
+                            shape.hasEditableVertices -> "Drag corners or side dots to fix the edges, the centre to move."
+                            else -> "Drag the centre to move."
+                        },
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

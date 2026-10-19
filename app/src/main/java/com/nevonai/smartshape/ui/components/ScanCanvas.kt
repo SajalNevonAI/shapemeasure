@@ -43,6 +43,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nevonai.smartshape.model.BoxF
 import com.nevonai.smartshape.model.DetectedShape
+import com.nevonai.smartshape.model.EdgeHandle
+import com.nevonai.smartshape.model.EditHandle
+import com.nevonai.smartshape.model.MoveHandle
+import com.nevonai.smartshape.model.ShapeEditing
+import com.nevonai.smartshape.model.SideHandle
+import com.nevonai.smartshape.model.VertexHandle
 import com.nevonai.smartshape.model.LengthUnit
 import com.nevonai.smartshape.model.Point2
 import com.nevonai.smartshape.model.Polygons
@@ -68,16 +74,20 @@ fun ScanCanvas(
     activeHighlight: Int = -1,
     showShapes: Boolean = true,
     onSelect: (Int?) -> Unit = {},
-    onMoveVertex: ((shapeId: Int, index: Int, point: Point2) -> Unit)? = null,
+    /** Called while a handle of the selected shape is dragged, with the shape's new outline. */
+    onEditShape: ((shapeId: Int, points: List<Point2>) -> Unit)? = null,
     /** While true, dragging draws a box and reports its four corners (image px) through [onMarked]. */
     markMode: Boolean = false,
+    markRound: Boolean = false,
     onMarked: (List<Point2>) -> Unit = {},
 ) {
     val textMeasurer = rememberTextMeasurer()
     val haptics = LocalHapticFeedback.current
     val handleRadiusPx = with(LocalDensity.current) { 22.dp.toPx() }
-    var drag by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    // Shape as it was when the finger went down, and the handle being dragged.
+    var drag by remember { mutableStateOf<Pair<DetectedShape, EditHandle>?>(null) }
     var dragPos by remember { mutableStateOf(Offset.Zero) }
+    var dragTotal by remember { mutableStateOf(Offset.Zero) }
     val currentShapes by rememberUpdatedState(shapes)
     val currentSelected by rememberUpdatedState(selectedId)
     var markStart by remember { mutableStateOf<Offset?>(null) }
@@ -121,30 +131,31 @@ fun ScanCanvas(
                         onSelect(if (hit?.id == currentSelected) null else hit?.id)
                     }
                 }
-                .pointerInput(showShapes, onMoveVertex != null, markMode) {
-                    if (!showShapes || onMoveVertex == null || markMode) return@pointerInput
+                .pointerInput(showShapes, onEditShape != null, markMode) {
+                    if (!showShapes || onEditShape == null || markMode) return@pointerInput
                     detectDragGestures(
                         onDragStart = { start ->
                             val s = size.width / image.width.toFloat()
-                            val shape = currentShapes.firstOrNull { it.id == currentSelected && it.hasEditableVertices } ?: return@detectDragGestures
-                            val idx = shape.points.indices.minByOrNull { (toOffset(shape.points[it], s) - start).getDistance() } ?: return@detectDragGestures
-                            if ((toOffset(shape.points[idx], s) - start).getDistance() <= handleRadiusPx * 1.6f) {
-                                drag = shape.id to idx
-                                dragPos = start
+                            val shape = currentShapes.firstOrNull { it.id == currentSelected } ?: return@detectDragGestures
+                            val handle = ShapeEditing.handles(shape).minByOrNull { (toOffset(it.at, s) - start).getDistance() } ?: return@detectDragGestures
+                            if ((toOffset(handle.at, s) - start).getDistance() <= handleRadiusPx * 1.6f) {
+                                drag = shape to handle
+                                dragTotal = Offset.Zero
+                                dragPos = toOffset(handle.at, s)
                                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }
                         },
                         onDragEnd = { drag = null },
                         onDragCancel = { drag = null },
                     ) { change, amount ->
-                        val d = drag ?: return@detectDragGestures
+                        val (shape, handle) = drag ?: return@detectDragGestures
                         change.consume()
                         val s = size.width / image.width.toFloat()
-                        dragPos = Offset(
-                            (dragPos.x + amount.x).coerceIn(0f, size.width.toFloat()),
-                            (dragPos.y + amount.y).coerceIn(0f, size.height.toFloat()),
-                        )
-                        onMoveVertex(d.first, d.second, Point2(dragPos.x / s.toDouble(), dragPos.y / s.toDouble()))
+                        dragTotal += amount
+                        val p = toOffset(handle.at, s) + dragTotal
+                        dragPos = Offset(p.x.coerceIn(0f, size.width.toFloat()), p.y.coerceIn(0f, size.height.toFloat()))
+                        val delta = Point2(dragTotal.x / s.toDouble(), dragTotal.y / s.toDouble())
+                        onEditShape(shape.id, ShapeEditing.drag(shape, handle, delta))
                     }
                 },
         ) {
@@ -173,22 +184,25 @@ fun ScanCanvas(
                         pathEffect = if (isReference) PathEffect.dashPathEffect(floatArrayOf(14f, 10f)) else null,
                     ),
                 )
-                if (selected && shape.hasEditableVertices) {
-                    shape.points.forEach { p ->
-                        val o = toOffset(p, s)
-                        drawCircle(Color.White, 9.dp.toPx(), o)
-                        drawCircle(color, 6.dp.toPx(), o)
-                    }
-                }
                 val label = measurements[shape.id]?.headline(unit) ?: shape.type.label
-                drawLabel(textMeasurer, if (isReference) "Reference" else label, toOffset(Polygons.centroid(shape.points), s), color, selected)
+                // A selected shape's label sits above it, leaving the centre free for the move handle.
+                val labelAt = if (selected && onEditShape != null) Offset(toOffset(Polygons.centroid(shape.points), s).x, shape.points.minOf { it.y }.toFloat() * s - 18.dp.toPx())
+                else toOffset(Polygons.centroid(shape.points), s)
+                drawLabel(textMeasurer, if (isReference) "Reference" else label, labelAt, color, selected)
+                if (selected && onEditShape != null) ShapeEditing.handles(shape).forEach { drawHandle(it, toOffset(it.at, s), color) }
             }
 
             markStart?.let { a ->
                 val tl = Offset(minOf(a.x, markEnd.x), minOf(a.y, markEnd.y))
                 val sz = Size(kotlin.math.abs(markEnd.x - a.x), kotlin.math.abs(markEnd.y - a.y))
-                drawRect(Color(0xFF34D399).copy(alpha = 0.18f), tl, sz)
-                drawRect(Color(0xFF34D399), tl, sz, style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f))))
+                val dash = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f)))
+                if (markRound) {
+                    drawOval(Color(0xFF34D399).copy(alpha = 0.18f), tl, sz)
+                    drawOval(Color(0xFF34D399), tl, sz, style = dash)
+                } else {
+                    drawRect(Color(0xFF34D399).copy(alpha = 0.18f), tl, sz)
+                    drawRect(Color(0xFF34D399), tl, sz, style = dash)
+                }
                 drawLoupe(image, markEnd, s)
             }
             drag?.let { drawLoupe(image, dragPos, s) }
@@ -197,6 +211,21 @@ fun ScanCanvas(
 }
 
 private fun toOffset(p: Point2, s: Float) = Offset(p.x.toFloat() * s, p.y.toFloat() * s)
+
+/** Corners: large dots. Sides: small dots. Centre: dot with a move cross. */
+private fun DrawScope.drawHandle(h: EditHandle, o: Offset, color: Color) {
+    when (h) {
+        is VertexHandle -> { drawCircle(Color.White, 9.dp.toPx(), o); drawCircle(color, 6.dp.toPx(), o) }
+        is EdgeHandle, is SideHandle -> { drawCircle(Color.White, 7.dp.toPx(), o); drawCircle(color, 4.5.dp.toPx(), o) }
+        is MoveHandle -> {
+            drawCircle(Color.White, 12.dp.toPx(), o)
+            drawCircle(color, 10.dp.toPx(), o)
+            val a = 6.dp.toPx()
+            drawLine(Color.White, o - Offset(a, 0f), o + Offset(a, 0f), 2.dp.toPx(), cap = StrokeCap.Round)
+            drawLine(Color.White, o - Offset(0f, a), o + Offset(0f, a), 2.dp.toPx(), cap = StrokeCap.Round)
+        }
+    }
+}
 
 private fun pathOf(points: List<Point2>, s: Float) = Path().apply {
     points.forEachIndexed { i, p -> if (i == 0) moveTo(p.x.toFloat() * s, p.y.toFloat() * s) else lineTo(p.x.toFloat() * s, p.y.toFloat() * s) }

@@ -30,6 +30,12 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import com.nevonai.smartshape.model.BoxF
+import com.nevonai.smartshape.model.OcrLine
 import com.nevonai.smartshape.model.OcrResult
 import com.nevonai.smartshape.model.TextMatch
 
@@ -45,6 +51,8 @@ fun OcrPanel(
     onCopy: () -> Unit,
     modifier: Modifier = Modifier,
     onRerun: (() -> Unit)? = null,
+    focusedLine: BoxF? = null,
+    onLineClick: (OcrLine) -> Unit = {},
 ) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         OutlinedTextField(
@@ -84,8 +92,30 @@ fun OcrPanel(
         if (!running && text.isBlank()) {
             Text("No text was recognised in this image.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else if (text.isNotBlank()) {
+            Text(
+                "Tap a line to find it on the photo · pinch or double-tap the photo to zoom",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // One row per recognised line, so each can be located on the image.
             SelectionContainer {
-                Text(highlight(text, query), style = MaterialTheme.typography.bodyMedium)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    ocr?.blocks?.forEachIndexed { b, block ->
+                        if (b > 0) Spacer(Modifier.height(8.dp))
+                        block.lines.forEach { line ->
+                            val focused = line.box == focusedLine
+                            Text(
+                                highlight(line.text, query),
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (focused) Color(0x55FFD54F) else Color.Transparent)
+                                    .clickable(onClickLabel = "Show on photo") { onLineClick(line) }
+                                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
         Spacer(Modifier.height(8.dp))

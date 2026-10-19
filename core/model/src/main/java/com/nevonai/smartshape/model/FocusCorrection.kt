@@ -18,10 +18,11 @@ data class FocusCorrection(val scale: Double, val offsetDiopters: Double) {
 
         /**
          * Per-model fits from photos of an object of known size at several distances.
-         * Galaxy S23 Ultra (SM-S918x) main camera: 75 mm box at 15–31 cm, residuals within ±3.5 %.
+         * Galaxy S23 Ultra (SM-S918x) main camera: 6 photos of a 75 x 185 mm box and an 85.6 x 54 mm
+         * card at 15–31 cm. Residuals up to ±9 %, mostly autofocus repeatability rather than model error.
          */
         fun forDevice(model: String): FocusCorrection = when {
-            model.startsWith("SM-S918") -> FocusCorrection(1.1254, -1.5771)
+            model.startsWith("SM-S918") -> FocusCorrection(1.0741, -1.1845)
             else -> Identity
         }
     }

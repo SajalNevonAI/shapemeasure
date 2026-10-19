@@ -10,6 +10,7 @@ import com.nevonai.smartshape.cv.ShapeDetector
 import com.nevonai.smartshape.data.ScanDraft
 import com.nevonai.smartshape.data.ScanRepository
 import com.nevonai.smartshape.data.SettingsRepository
+import com.nevonai.smartshape.model.BoxF
 import com.nevonai.smartshape.model.Calibration
 import com.nevonai.smartshape.model.CalibrationSource
 import com.nevonai.smartshape.model.DetectedShape
@@ -21,6 +22,7 @@ import com.nevonai.smartshape.model.OcrResult
 import com.nevonai.smartshape.model.Point2
 import com.nevonai.smartshape.model.Polygons
 import com.nevonai.smartshape.model.ShapeMeasurement
+import com.nevonai.smartshape.model.ShapeEditing
 import com.nevonai.smartshape.model.ShapeType
 import com.nevonai.smartshape.model.TextMatch
 import com.nevonai.smartshape.model.TextSearch
@@ -71,6 +73,10 @@ data class EditorState(
     val saving: Boolean = false,
     /** User is drawing a box around the sticker on the image. */
     val marking: Boolean = false,
+    /** Manual marking draws a circle/ellipse inside the dragged box instead of a rectangle. */
+    val markRound: Boolean = false,
+    /** OCR line the user tapped; the photo zooms to and highlights it. */
+    val focusBox: BoxF? = null,
     val dirty: Boolean = false,
 ) {
     val measurements: Map<Int, ShapeMeasurement> = shapes.associate { it.id to MeasurementEngine.measure(it, calibration) }
@@ -153,16 +159,18 @@ class EditorViewModel @Inject constructor(
 
     private fun fail(message: String) = _state.update { it.copy(loading = false, error = message) }
 
-    fun selectTab(tab: EditorTab) = _state.update { it.copy(tab = tab) }
+    // Marking only applies to the Measure tab; leaving it cancels an unfinished mark.
+    fun selectTab(tab: EditorTab) = _state.update { it.copy(tab = tab, marking = it.marking && tab == EditorTab.MEASURE) }
     fun select(id: Int?) = _state.update { it.copy(selectedId = id) }
     fun setUnit(unit: LengthUnit) = _state.update { it.copy(unit = unit) }
     fun setTitle(title: String) = _state.update { it.copy(title = title, dirty = true) }
     fun setNotes(notes: String) = _state.update { it.copy(notes = notes, dirty = true) }
     fun setTags(tags: List<String>) = _state.update { it.copy(tags = tags, dirty = true) }
 
-    fun moveVertex(shapeId: Int, index: Int, p: Point2) = _state.update { s ->
+    /** Hand edit of an outline (corner, side, resize or move); the shape is re-labelled to match its new form. */
+    fun editShape(shapeId: Int, points: List<Point2>) = _state.update { s ->
         val shapes = s.shapes.map { shape ->
-            if (shape.id != shapeId) shape else shape.copy(points = shape.points.toMutableList().also { it[index] = p })
+            if (shape.id != shapeId) shape else shape.copy(points = points, type = ShapeEditing.retype(shape.type, points))
         }
         val calibration = if (shapeId == s.referenceShapeId) recalibrateReference(s, shapes.first { it.id == shapeId }) ?: s.calibration else s.calibration
         s.copy(shapes = shapes, calibration = calibration, dirty = true)
@@ -179,8 +187,11 @@ class EditorViewModel @Inject constructor(
         )
     }
 
+    fun focusText(box: BoxF?) = _state.update { it.copy(focusBox = box) }
+
     fun startMarking() = _state.update { it.copy(marking = true, tab = EditorTab.MEASURE) }
     fun cancelMarking() = _state.update { it.copy(marking = false) }
+    fun setMarkRound(round: Boolean) = _state.update { it.copy(markRound = round) }
 
     /**
      * Replaces the detected outline with the sticker the user marked (one object per photo). The
@@ -190,7 +201,17 @@ class EditorViewModel @Inject constructor(
         val e = Polygons.edges(corners)
         val ratio = minOf(e[0], e[1]) / maxOf(e[0], e[1])
         val id = (s.shapes.maxOfOrNull { it.id } ?: 0) + 1
-        val shape = DetectedShape(id, if (ratio > 0.95) ShapeType.SQUARE else ShapeType.RECTANGLE, 1f, corners)
+        val shape = if (s.markRound) {
+            // Ellipse inscribed in the dragged box, sampled like detected curves.
+            val cx = (corners[0].x + corners[2].x) / 2
+            val cy = (corners[0].y + corners[2].y) / 2
+            val rx = e[0] / 2
+            val ry = e[1] / 2
+            val pts = ShapeEditing.ellipseIn(cx - rx, cy - ry, cx + rx, cy + ry)
+            DetectedShape(id, if (ratio > 0.92) ShapeType.CIRCLE else ShapeType.ELLIPSE, 1f, pts)
+        } else {
+            DetectedShape(id, if (ratio > 0.95) ShapeType.SQUARE else ShapeType.RECTANGLE, 1f, corners)
+        }
         s.copy(shapes = listOf(shape), selectedId = id, referenceShapeId = null, marking = false, dirty = true)
     }
 
@@ -268,11 +289,11 @@ class EditorViewModel @Inject constructor(
 
     fun search(query: String) = _state.update { s ->
         val matches = s.ocr?.let { TextSearch.find(it, query) } ?: emptyList()
-        s.copy(query = query, matches = matches, activeMatch = 0)
+        s.copy(query = query, matches = matches, activeMatch = 0, focusBox = null)
     }
 
     fun nextMatch(step: Int) = _state.update { s ->
-        if (s.matches.isEmpty()) s else s.copy(activeMatch = (s.activeMatch + step).mod(s.matches.size))
+        if (s.matches.isEmpty()) s else s.copy(activeMatch = (s.activeMatch + step).mod(s.matches.size), focusBox = null)
     }
 
     fun save() {
